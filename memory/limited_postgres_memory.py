@@ -2,9 +2,9 @@ from typing import List, Optional
 from langchain_community.chat_message_histories import PostgresChatMessageHistory
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage # Importar para reconstrução
 from langchain_core.chat_history import BaseChatMessageHistory
-import datetime # <<< NOVO
-import pytz # <<< NOVO
-import json # <<< NOVO: Para desserializar o JSON da mensagem
+import datetime 
+import pytz 
+import json # Para desserializar o JSON da mensagem
 try:
     import psycopg2
     import psycopg2.extras
@@ -19,7 +19,7 @@ class LimitedPostgresChatMessageHistory(BaseChatMessageHistory):
     """PostgreSQL chat message history that stores all messages but limits agent context to recent messages."""
     
     # Fuso horário para formatação (padrão de time_tool)
-    TIMEZONE = "America/Sao_Paulo" # <<< NOVO CONSTANTE
+    TIMEZONE = "America/Sao_Paulo" 
     
     def __init__(
         self,
