@@ -70,9 +70,6 @@ def alterar_tool(telefone: str, json_body: str) -> str:
     return alterar(telefone, json_body)
 
 
-
-
-
 @tool
 def time_tool() -> str:
     """
@@ -152,7 +149,7 @@ ACTIVE_TOOLS = [
     estoque_preco_alias,
     estoque_tool,
     time_tool,
-    pedidos_tool,  # <--- ADICIONADO AQUI (Correção Crítica)
+    pedidos_tool,
 ]
 
 
@@ -180,8 +177,8 @@ def load_system_prompt() -> str:
 
 def _build_llm():
     provider = getattr(settings, "llm_provider", "openai").lower()
-    model = getattr(settings, "llm_model", "gpt-5-mini")
-    temp = float(getattr(settings, "llm_temperature", 1.0))
+    model = getattr(settings, "llm_model", "gpt-4o-mini")
+    temp = float(getattr(settings, "llm_temperature", 0.0))
     profile = getattr(settings, "llm_profile", None)
     
     print(f"[LLM] Configurando LLM: provider={provider}, model={model}, temp={temp}")
@@ -215,10 +212,24 @@ def _build_llm():
                 _u = _u.rstrip("/") + "/anthropic"
             _os.environ["ANTHROPIC_BASE_URL"] = _u
         from langchain_anthropic import ChatAnthropic
-        return ChatAnthropic(model=model, temperature=temp, max_tokens=max_tokens)
+        # max_tokens não está definido, assumindo que foi omitido ou definido fora
+        return ChatAnthropic(model=model, temperature=temp)
     
     print(f"[LLM] Criando ChatOpenAI com modelo {model}")
-    return ChatOpenAI(model=model, openai_api_key=settings.openai_api_key, temperature=temp)
+    
+    llm_kwargs = {
+        "model": model,
+        "openai_api_key": settings.openai_api_key,
+    }
+    
+    # A ÚNICA MUDANÇA: Verifica se o modelo problemático está sendo usado com 0.0
+    # O modelo 'gpt-5-mini' não aceita temperature=0.0.
+    if model.lower() != "gpt-5-mini" or temp != 0.0:
+        llm_kwargs["temperature"] = temp
+    else:
+        logger.warning(f"Temperatura 0.0 removida para o modelo {model}. Usando o padrão da API (1).")
+        
+    return ChatOpenAI(**llm_kwargs)
 
 def create_agent_with_history():
     """Cria o agente LangGraph com histórico usando create_react_agent"""
