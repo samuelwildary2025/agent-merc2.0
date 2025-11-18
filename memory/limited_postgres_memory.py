@@ -1,7 +1,10 @@
 from typing import List, Optional
 from langchain_community.chat_message_histories import PostgresChatMessageHistory
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage # Importar para reconstrução
 from langchain_core.chat_history import BaseChatMessageHistory
+import datetime # <<< NOVO
+import pytz # <<< NOVO
+import json # <<< NOVO: Para desserializar o JSON da mensagem
 try:
     import psycopg2
     import psycopg2.extras
@@ -14,6 +17,9 @@ from config.settings import settings
 
 class LimitedPostgresChatMessageHistory(BaseChatMessageHistory):
     """PostgreSQL chat message history that stores all messages but limits agent context to recent messages."""
+    
+    # Fuso horário para formatação (padrão de time_tool)
+    TIMEZONE = "America/Sao_Paulo" # <<< NOVO CONSTANTE
     
     def __init__(
         self,
@@ -53,7 +59,6 @@ class LimitedPostgresChatMessageHistory(BaseChatMessageHistory):
     def add_message(self, message: BaseMessage) -> None:
         """Add a message to the database (all messages are stored)."""
         self._postgres_history.add_message(message)
-        # No limit enforcement - all messages are stored for reporting
     
     def clear(self) -> None:
         """Clear all messages for this session."""
@@ -78,10 +83,18 @@ class LimitedPostgresChatMessageHistory(BaseChatMessageHistory):
                         messages_to_delete = len(message_ids) - self.max_messages
                         ids_to_delete = [msg[0] for msg in message_ids[:messages_to_delete]]
                         
-                        cursor.execute(f"""
-                            DELETE FROM {self.table_name}
-                            WHERE id = ANY(%s)
-                        """, (ids_to_delete,))
+                        # Usando psycopg2.sql para construção segura (se psycopg2 for usado)
+                        try:
+                            delete_query = psycopg2.sql.SQL(
+                                "DELETE FROM {} WHERE id = ANY(%s)"
+                            ).format(psycopg2.sql.Identifier(self.table_name))
+                            cursor.execute(delete_query, (ids_to_delete,))
+                        except AttributeError:
+                             # Fallback para string formatada
+                            cursor.execute(f"""
+                                DELETE FROM {self.table_name}
+                                WHERE id = ANY(%s)
+                            """, (ids_to_delete,))
                         
                         conn.commit()
                         
@@ -140,23 +153,91 @@ class LimitedPostgresChatMessageHistory(BaseChatMessageHistory):
         # If 2+ confusion patterns in last 3 messages, suggest clearing
         return confusion_count >= 2
     
+    
+    def _fetch_messages_with_timestamp(self) -> List[BaseMessage]:
+        """
+        Recupera todas as mensagens COM a data de criação e injeta a data/hora no conteúdo.
+        """
+        try:
+            with psycopg2.connect(self.connection_string) as conn:
+                with conn.cursor() as cursor:
+                    # Consulta SQL para recuperar a mensagem (JSONB) e a data de criação
+                    query = f"""
+                        SELECT message, created_at
+                        FROM {self.table_name}
+                        WHERE session_id = %s
+                        ORDER BY created_at ASC
+                    """
+                    cursor.execute(query, (self.session_id,))
+                    
+                    raw_messages = cursor.fetchall()
+
+                    # Reconstruir o objeto BaseMessage e injetar o timestamp
+                    processed_messages: List[BaseMessage] = []
+                    tz = pytz.timezone(self.TIMEZONE)
+                    
+                    for raw_message_data in raw_messages:
+                        message_json = raw_message_data[0]
+                        created_at = raw_message_data[1] # datetime.datetime object
+                        
+                        # O campo 'message' no DB é um JSONB que armazena a representação da Langchain
+                        # Desserializar para um dicionário Python
+                        if isinstance(message_json, str):
+                            message_dict = json.loads(message_json)
+                        elif isinstance(message_json, dict):
+                            message_dict = message_json
+                        else:
+                            continue # Pular dados inválidos
+                            
+                        message_type = message_dict.get("type", "human")
+                        content = message_dict.get("content", "")
+                        additional_kwargs = message_dict.get("additional_kwargs", {})
+                        
+                        # Formatar a hora
+                        dt_localized = created_at.astimezone(tz)
+                        formatted_time = dt_localized.strftime("%d/%m/%Y %H:%M:%S (%Z)")
+                        
+                        # Injetar o timestamp no conteúdo
+                        new_content = f"[CONTEXTO_MEMORIA_ANTIGA: {formatted_time}] {content}"
+                        
+                        # Recriar o objeto BaseMessage com o conteúdo modificado
+                        if message_type == "ai":
+                            msg = AIMessage(content=new_content, additional_kwargs=additional_kwargs)
+                        else:
+                            # Tratar "human" e outros como HumanMessage
+                            msg = HumanMessage(content=new_content, additional_kwargs=additional_kwargs)
+
+                        processed_messages.append(msg)
+                        
+                    return processed_messages
+                    
+        except Exception as e:
+            print(f"Error fetching messages with timestamp: {e}")
+            # Em caso de falha, retorna o histórico padrão (sem timestamp injetado)
+            return self._postgres_history.messages
+
+    
     def get_optimized_context(self) -> List[BaseMessage]:
         """
         Get optimized context for product identification.
         Focuses on recent product-related messages.
         """
-        all_messages = self._postgres_history.messages
+        # 1. Busca todas as mensagens COM o timestamp injetado
+        all_messages = self._fetch_messages_with_timestamp()
         
         if len(all_messages) <= self.max_messages:
             return all_messages
         
-        # Get recent messages
+        # 2. Obtém mensagens recentes (com timestamp injetado)
+        # O histórico já está ordenado por created_at ASC
         recent_messages = all_messages[-self.max_messages:]
         
-        # Check if we should clear context due to confusion
+        # 3. Checa se deve limpar o contexto
+        # A checagem de confusão deve ser feita no conteúdo JÁ INJETADO
         if self.should_clear_context(recent_messages):
             print(f"🔄 Detectada confusão do agente. Recomendação: limpar contexto para {self.session_id}")
-            # Return only the very last messages to reset context
-            return recent_messages[-3:]  # Only last 3 messages
+            # Retorna apenas as 3 últimas mensagens (que já contêm o timestamp)
+            return recent_messages[-3:]
         
+        # 4. Retorna as N mensagens mais recentes (que já contêm o timestamp)
         return recent_messages
