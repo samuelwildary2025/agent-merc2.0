@@ -222,12 +222,15 @@ def _build_llm():
         "openai_api_key": settings.openai_api_key,
     }
     
-    # A ÚNICA MUDANÇA: Verifica se o modelo problemático está sendo usado com 0.0
-    # O modelo 'gpt-5-mini' não aceita temperature=0.0.
-    if model.lower() != "gpt-5-mini" or temp != 0.0:
-        llm_kwargs["temperature"] = temp
+    # === CORREÇÃO FINAL PARA O GPT-5-MINI ===
+    if model.lower() == "gpt-5-mini":
+        # Este modelo *só* aceita temperature=1.0. Forçamos este valor.
+        llm_kwargs["temperature"] = 1.0
+        if temp != 1.0:
+            logger.warning(f"Temperatura configurada ({temp}) sobrescrita para 1.0, o único valor suportado pelo modelo {model}.")
     else:
-        logger.warning(f"Temperatura 0.0 removida para o modelo {model}. Usando o padrão da API (1).")
+        # Para outros modelos, usamos a temperatura configurada no .env
+        llm_kwargs["temperature"] = temp
         
     return ChatOpenAI(**llm_kwargs)
 
