@@ -180,8 +180,8 @@ def load_system_prompt() -> str:
 
 def _build_llm():
     provider = getattr(settings, "llm_provider", "openai").lower()
-    model = getattr(settings, "llm_model", "gpt-4o-mini")
-    temp = float(getattr(settings, "llm_temperature", 0.0))
+    model = getattr(settings, "llm_model", "gpt-5-mini")
+    temp = float(getattr(settings, "llm_temperature", 1.0))
     profile = getattr(settings, "llm_profile", None)
     
     print(f"[LLM] Configurando LLM: provider={provider}, model={model}, temp={temp}")
