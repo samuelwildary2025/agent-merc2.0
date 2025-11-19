@@ -11,7 +11,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode, tools_condition, create_react_agent
-from langgraph.checkpoint.memory import MemorySaver
+# MemorySaver removido para usar Postgres manual
 from pathlib import Path
 import json
 import os
@@ -19,7 +19,6 @@ import os
 from config.settings import settings
 from config.logger import setup_logger
 from tools.http_tools import estoque, pedidos, alterar, ean_lookup, estoque_preco
-# Redis tools removidos - apenas buffer de mensagens mantido
 from tools.time_tool import get_current_time
 from memory.limited_postgres_memory import LimitedPostgresChatMessageHistory
 
@@ -212,7 +211,6 @@ def _build_llm():
                 _u = _u.rstrip("/") + "/anthropic"
             _os.environ["ANTHROPIC_BASE_URL"] = _u
         from langchain_anthropic import ChatAnthropic
-        # max_tokens não está definido, assumindo que foi omitido ou definido fora
         return ChatAnthropic(model=model, temperature=temp)
     
     print(f"[LLM] Criando ChatOpenAI com modelo {model}")
@@ -235,23 +233,22 @@ def _build_llm():
     return ChatOpenAI(**llm_kwargs)
 
 def create_agent_with_history():
-    """Cria o agente LangGraph com histórico usando create_react_agent"""
-    logger.info("Criando agente LangGraph com create_react_agent...")
+    """Cria o agente LangGraph SEM checkpointer interno (gerenciamento manual via Postgres)"""
+    logger.info("Criando agente LangGraph...")
     
     # Carregar prompt do sistema
     system_prompt = load_system_prompt()
     
     llm = _build_llm()
     
-    # Criar memória com checkpoint
-    memory = MemorySaver()
+    # NOTA: MemorySaver removido para usar Postgres diretamente no run_agent
     
-    # Criar agente REACT usando a função prebuilt
+    # Criar agente REACT sem memória interna automática
     agent = create_react_agent(
         llm,
         ACTIVE_TOOLS,
-        prompt=system_prompt,
-        checkpointer=memory
+        prompt=system_prompt
+        # checkpointer removido
     )
     
     logger.info("✅ Agente LangGraph REACT criado com sucesso")
@@ -276,66 +273,66 @@ def get_agent_graph():
 
 def run_agent_langgraph(telefone: str, mensagem: str) -> Dict[str, Any]:
     """
-    Executa o agente LangGraph com uma mensagem e ID de sessão (telefone).
-    
-    Args:
-        telefone: Telefone do cliente (usado como session_id)
-        mensagem: Mensagem do cliente
-    
-    Returns:
-        Dict com 'output' (resposta do agente) e 'error' (se houver)
+    Executa o agente LangGraph gerenciando o estado via Postgres manualmente.
+    Isso garante que os timestamps sejam injetados corretamente na memória.
     """
     print(f"[AGENT] Iniciando processamento para telefone: {telefone}")
     print(f"[AGENT] Mensagem: {mensagem}")
     
     try:
-        agent = get_agent_graph()
-        print(f"[AGENT] Agente carregado com {len(ACTIVE_TOOLS)} ferramentas ativas")
+        # 1. Obter a instância do histórico Postgres
+        # Garante que usamos a lógica de injeção de timestamp definida em limited_postgres_memory.py
+        history = get_session_history(telefone)
         
-        # Preparar estado inicial
+        # 2. Salvar a mensagem do usuário no banco IMEDIATAMENTE
+        # Isso garante que ela receba um timestamp e entre no contexto da memória
+        history.add_user_message(mensagem)
+        
+        # 3. Recuperar o contexto otimizado (com timestamps injetados)
+        # A propriedade .messages chama _fetch_messages_with_timestamp internamente
+        chat_history = history.messages
+        
+        logger.info(f"[AGENT] Histórico carregado: {len(chat_history)} mensagens")
+        
+        # 4. Executar o agente passando o histórico completo
+        agent = get_agent_graph()
+        
+        # Estado inicial com todo o histórico recuperado do banco
         initial_state = {
-            "messages": [HumanMessage(content=mensagem)],
+            "messages": chat_history,
         }
         
-        logger.info(f"Estado inicial preparado: {initial_state}")
-        
-        # Configuração com session_id para checkpoint
-        config = {"configurable": {"thread_id": telefone}}
-        
-        # Executar grafo
         logger.info("Executando agente...")
-        result = agent.invoke(initial_state, config)
+        
+        # Invocamos sem config de thread_id, pois o estado já foi passado explicitamente
+        result = agent.invoke(initial_state)
         
         # Debug: verificar estrutura do resultado
-        print(f"[DEBUG] Resultado do agente: {result}")
-        print(f"[DEBUG] Tipo do resultado: {type(result)}")
+        # print(f"[DEBUG] Resultado do agente: {result}")
         
-        # Extrair última mensagem (resposta do agente)
+        output = "Desculpe, não consegui processar sua mensagem."
+        
+        # 5. Extrair e Salvar a resposta do Agente
         if isinstance(result, dict) and "messages" in result:
             messages = result["messages"]
-            print(f"[DEBUG] Total de mensagens: {len(messages)}")
             if messages:
                 last_message = messages[-1]
-                print(f"[DEBUG] Última mensagem: {last_message}")
-                print(f"[DEBUG] Tipo da última mensagem: {type(last_message)}")
                 
                 if isinstance(last_message, AIMessage):
                     output = last_message.content
                 else:
                     output = str(last_message.content)
                 
-                print(f"[DEBUG] Conteúdo extraído: {output}")
+                # Salvar a resposta da IA no histórico Postgres para persistência
+                history.add_message(last_message)
+                
             else:
-                print("[ERROR] Nenhuma mensagem retornada pelo agente")
-                output = "Desculpe, não consegui processar sua mensagem."
+                logger.error("Nenhuma mensagem retornada pelo agente")
         else:
-            print(f"[ERROR] Resultado inesperado do agente: {result}")
-            output = "Desculpe, não consegui processar sua mensagem."
+            logger.error(f"Resultado inesperado do agente: {result}")
         
         logger.info("✅ Agente LangGraph REACT executado com sucesso")
-        logger.debug(f"Resposta: {output}")
-        
-        # Redis removido - apenas buffer de mensagens mantido
+        # logger.debug(f"Resposta: {output}")
         
         return {"output": output, "error": None}
         
