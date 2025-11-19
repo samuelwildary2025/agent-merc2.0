@@ -182,9 +182,10 @@ def _build_llm():
     
     print(f"[LLM] Configurando LLM: provider={provider}, model={model}, temp={temp}")
     
-    # Usar gpt-5-mini se especificado
+    # Usar gpt-5-mini se especificado (apenas log)
     if model == "gpt-5-mini":
         print(f"[LLM] Usando modelo: {model}")
+        
     if profile:
         p = str(profile).lower().strip()
         if p == "quality_openai":
@@ -199,6 +200,7 @@ def _build_llm():
             provider, model, temp = "moonshot", "kimi-k2-turbo-preview", 0.6
         elif p == "economy_kimi":
             provider, model, temp = "moonshot", "kimi-k2-0711-preview", 0.6
+            
     if provider == "moonshot":
         import os as _os
         k = getattr(settings, "moonshot_api_key", None)
@@ -218,17 +220,9 @@ def _build_llm():
     llm_kwargs = {
         "model": model,
         "openai_api_key": settings.openai_api_key,
+        # CORREÇÃO: Usar a temperatura configurada no .env (0.0) para QUALQUER modelo
+        "temperature": temp
     }
-    
-    # === CORREÇÃO FINAL PARA O GPT-5-MINI ===
-    if model.lower() == "gpt-5-mini":
-        # Este modelo *só* aceita temperature=1.0. Forçamos este valor.
-        llm_kwargs["temperature"] = 1.0
-        if temp != 1.0:
-            logger.warning(f"Temperatura configurada ({temp}) sobrescrita para 1.0, o único valor suportado pelo modelo {model}.")
-    else:
-        # Para outros modelos, usamos a temperatura configurada no .env
-        llm_kwargs["temperature"] = temp
         
     return ChatOpenAI(**llm_kwargs)
 
@@ -248,7 +242,7 @@ def create_agent_with_history():
         llm,
         ACTIVE_TOOLS,
         prompt=system_prompt
-        # checkpointer removido
+        # checkpointer removido para permitir gestão manual
     )
     
     logger.info("✅ Agente LangGraph REACT criado com sucesso")
@@ -307,9 +301,6 @@ def run_agent_langgraph(telefone: str, mensagem: str) -> Dict[str, Any]:
         # Invocamos sem config de thread_id, pois o estado já foi passado explicitamente
         result = agent.invoke(initial_state)
         
-        # Debug: verificar estrutura do resultado
-        # print(f"[DEBUG] Resultado do agente: {result}")
-        
         output = "Desculpe, não consegui processar sua mensagem."
         
         # 5. Extrair e Salvar a resposta do Agente
@@ -332,7 +323,6 @@ def run_agent_langgraph(telefone: str, mensagem: str) -> Dict[str, Any]:
             logger.error(f"Resultado inesperado do agente: {result}")
         
         logger.info("✅ Agente LangGraph REACT executado com sucesso")
-        # logger.debug(f"Resposta: {output}")
         
         return {"output": output, "error": None}
         
